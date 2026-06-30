@@ -1,6 +1,6 @@
 /* 枯山水計分 PWA Service Worker — 離線快取
    產生者：Claude (Anthropic) Opus 4.8  最後修改：2026-06-30 */
-const CACHE = 'ksui-v1';
+const CACHE = 'ksui-v3';
 const ASSETS = [
   './',
   './枯山水計分.html',

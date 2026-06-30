@@ -3,13 +3,18 @@
   ============================================================================
   枯山水 (Stone Garden) 拍照計分工具  -  純前端 / 無後端 / 無 AI / 可離線
   ----------------------------------------------------------------------------
-  做法：手機拍／上傳庭園照片 → 拖四角對齊 3x5 棋盤 → 瀏覽器 canvas 影像分析
-        自動判斷每格(砂/苔/有無石頭/石頭大概大小) → 依規則精算分數。
-  CV 限制：漩渦、砂紋對齊、左右對稱、石頭精確種類無法可靠純前端辨識，
-           故偵測後可「點格修正」，並對看不到的項目(德點/名庭/漩渦/砂紋)提供手動欄位。
+  做法：手機拍／上傳庭園照片 → 拖四角對齊 3x5 棋盤 → (可選)取色校正
+        → 瀏覽器 canvas 影像分析 → 偵測每格(砂/苔/有無石頭) → 依規則精算分數。
+  v2 改善：
+    A 取色校正：點照片取砂/苔/石頭實際顏色，依此分類，不怕光線。
+    B 透視校正：四角用真正的透視轉換(homography)取樣，斜拍也準。
+    C 點選修正面板：點格跳明確選單(砂/苔 + 5 種石頭)，不再用猜。
+    D 石頭不亂猜：偵測到石頭先標「?」，種類由使用者一指確認。
+    E 偵測疊圖：把判讀結果疊回照片上，可一眼對照真實。
+  CV 限制：漩渦、砂紋連接、依砂紋方向的對稱無法可靠純前端辨識，採手動欄位。
   ----------------------------------------------------------------------------
   產生者：Claude (Anthropic) Opus 4.8
-  最後修改日期：2026-06-30（加入 PWA：manifest / service worker / 主畫面圖示）
+  最後修改日期：2026-06-30（v2：A~E 準確度改善）
   ============================================================================
 -->
 <html lang="zh-Hant">
@@ -49,20 +54,23 @@
     padding:11px 14px;background:var(--accent);color:#1a1410;font-weight:700;
     cursor:pointer;letter-spacing:1px;}
   button.sec{background:var(--panel2);color:var(--text);border:1px solid var(--line);font-weight:500;}
+  button.on{outline:2px solid var(--gold);outline-offset:1px;}
   button:active{transform:scale(.97);}
   button:disabled{opacity:.4;}
   .row{display:flex;gap:8px;flex-wrap:wrap;}
   .row>*{flex:1;min-width:0;}
   input[type=file]{display:none;}
   label.btn{display:block;text-align:center;}
-  /* 影像區 */
   .stage{position:relative;width:100%;background:#000;border-radius:10px;overflow:hidden;
     touch-action:none;display:none;}
   .stage canvas{display:block;width:100%;height:auto;}
   #overlay{position:absolute;inset:0;width:100%;height:100%;}
   video{width:100%;border-radius:10px;display:block;background:#000;}
   .hint{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5;}
-  /* 棋盤格 */
+  .calib{display:flex;gap:6px;margin-top:10px;}
+  .calib button{flex:1;font-size:13px;padding:9px 4px;}
+  .sw{display:inline-block;width:12px;height:12px;border-radius:3px;border:1px solid #0006;
+    vertical-align:middle;margin-left:5px;background:#0000;}
   .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:6px;}
   .cell{aspect-ratio:1.35/1;border-radius:8px;display:flex;flex-direction:column;
     align-items:center;justify-content:center;font-size:11px;position:relative;
@@ -70,10 +78,12 @@
   .cell.sand{background:var(--sand);color:#3a3225;}
   .cell.moss{background:var(--moss);color:#eef3e6;}
   .cell .stoneIco{font-size:20px;line-height:1;margin-top:2px;font-weight:700;}
+  .cell .stoneIco.q{color:var(--danger);}
   .cell .pos{position:absolute;top:2px;left:4px;font-size:9px;opacity:.5;}
   .cell.cc{border-color:var(--gold);}
   .legend{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6;}
-  /* 分數 */
+  .banner{background:#3a2a22;border:1px solid var(--danger);color:#f0c9b8;
+    border-radius:8px;padding:8px 10px;font-size:12px;margin-top:8px;display:none;}
   .score-line{display:flex;justify-content:space-between;align-items:center;
     padding:7px 2px;border-bottom:1px dashed var(--line);font-size:13px;gap:8px;}
   .score-line:last-child{border-bottom:none;}
@@ -87,18 +97,30 @@
   .total .big{font-size:40px;font-weight:800;color:var(--gold);font-variant-numeric:tabular-nums;}
   .tag{font-size:10px;color:var(--muted);}
   .warn{font-size:11px;color:var(--accent2);}
-  details{margin-top:8px;}
-  summary{cursor:pointer;font-size:12px;color:var(--muted);}
-  .editbar{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted);}
+  details{margin-top:8px;} summary{cursor:pointer;font-size:12px;color:var(--muted);}
+  /* 修正面板 modal */
+  .modal{position:fixed;inset:0;background:#000a;display:none;align-items:flex-end;
+    justify-content:center;z-index:50;}
+  .modal.show{display:flex;}
+  .sheet{background:var(--panel);border:1px solid var(--line);border-radius:16px 16px 0 0;
+    width:100%;max-width:560px;padding:16px 14px 24px;}
+  .sheet h3{margin:0 0 10px;font-size:15px;color:var(--gold);}
+  .seg{display:flex;gap:6px;margin:6px 0 12px;}
+  .seg button{flex:1;}
+  .stoneGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
+  .stoneGrid button{display:flex;flex-direction:column;gap:2px;align-items:center;font-size:12px;
+    padding:10px 4px;}
+  .stoneGrid button .ic{font-size:22px;line-height:1;}
+  .sheet .close{width:100%;margin-top:12px;}
 </style>
 </head>
 <body>
 
 <h1>枯山水 ・ 拍照計分</h1>
-<div class="sub">拍下你的庭園板 → 拖四角對齊 → 自動分析並算分。<br>
-※ 純前端離線運作。漩渦/砂紋對齊/對稱/石頭種類無法完全自動，偵測後可點格修正。</div>
+<div class="sub">拍照只負責「快速帶入 7~8 成」，每一項都能人工微調。<br>
+流程：拍照→對齊→校正→分析→<b>逐格/逐項微調</b>；也可略過拍照純手動建立。</div>
 
-<!-- 1. 取得照片 -->
+<!-- 1 取得照片 -->
 <div class="card">
   <h2><span class="step">1</span> 取得庭園照片</h2>
   <div class="row">
@@ -110,40 +132,51 @@
   <video id="video" playsinline style="display:none;margin-top:10px;"></video>
   <button id="btnShot" style="display:none;margin-top:8px;width:100%;">📸 擷取畫面</button>
   <div class="hint">建議：正上方俯拍、整片庭園入鏡、光線均勻不反光。</div>
+  <button id="btnManual" class="sec" style="width:100%;margin-top:10px;">或：略過拍照，手動建立庭園</button>
 </div>
 
-<!-- 2. 對齊 + 分析 -->
+<!-- 2 對齊 + 校正 + 分析 -->
 <div class="card" id="alignCard" style="display:none;">
-  <h2><span class="step">2</span> 拖四角對齊庭園範圍</h2>
+  <h2><span class="step">2</span> 對齊・校正・分析</h2>
   <div class="stage" id="stage">
     <canvas id="img"></canvas>
     <svg id="overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
   </div>
-  <div class="hint">把四個圓點拖到庭園「3列×5行」格區的四個角。對齊後按下方分析。</div>
+  <div class="hint">① 先把四個金點拖到庭園「3列×5行」格區的四角。</div>
+  <div class="hint">② (建議)取色校正：點下方按鈕後，再點照片中對應的位置取色。</div>
+  <div class="calib">
+    <button class="sec" id="cSand">點砂<span class="sw" id="swSand"></span></button>
+    <button class="sec" id="cMoss">點苔<span class="sw" id="swMoss"></span></button>
+    <button class="sec" id="cStone">點石<span class="sw" id="swStone"></span></button>
+  </div>
   <button id="btnAnalyze" style="width:100%;margin-top:10px;">🔍 分析這張照片</button>
 </div>
 
-<!-- 3. 偵測結果(可修正) -->
+<!-- 3 偵測結果 -->
 <div class="card" id="gridCard" style="display:none;">
   <h2><span class="step">3</span> 偵測結果（點格可修正）</h2>
   <div class="grid" id="grid"></div>
+  <div class="banner" id="qBanner"></div>
   <div class="legend">
-    點一下格子循環切換：<b>砂 → 苔</b>；點石頭圖示循環：<br>
-    無 → □橫石 → △小立石 → ◇臥石 → ▲大立石 → 凵舟石。<br>
-    金框 = 中央直行。上排=最上列。
+    點任一格 → 跳出選單改「砂/苔」與「石頭種類」。<br>
+    □橫石 △小立石 ◇臥石 ▲大立石 凵舟石；<span style="color:var(--danger)">?</span>=偵測到石頭但種類未指定。<br>
+    金框 = 中央直行。
   </div>
-  <div class="editbar">
-    <span>長按格子可單獨切換石頭。</span>
+  <div id="symRow" style="margin-top:12px;">
+    <span class="tag">左右對稱列（砂紋方向需你自行確認；點亮 = 該列對稱 +5）</span>
+    <div class="row" style="margin-top:6px;">
+      <button class="sec" data-row="0">上排對稱</button>
+      <button class="sec" data-row="1">中排對稱</button>
+      <button class="sec" data-row="2">下排對稱</button>
+    </div>
   </div>
 </div>
 
-<!-- 4. 計分 -->
+<!-- 4 計分 -->
 <div class="card" id="scoreCard" style="display:none;">
   <h2><span class="step">4</span> 計分結果</h2>
   <div id="scoreList"></div>
-  <div class="total">
-    <span>總分</span><span class="big" id="totalScore">0</span>
-  </div>
+  <div class="total"><span>總分</span><span class="big" id="totalScore">0</span></div>
   <details>
     <summary>無法從照片判讀的項目（請手動確認）</summary>
     <div style="margin-top:8px;">
@@ -164,298 +197,335 @@
   </details>
 </div>
 
+<!-- 修正面板 -->
+<div class="modal" id="modal">
+  <div class="sheet">
+    <h3 id="mTitle">修正格子</h3>
+    <div class="tag">基底</div>
+    <div class="seg">
+      <button class="sec" data-base="sand">砂</button>
+      <button class="sec" data-base="moss">苔</button>
+    </div>
+    <div class="tag">石頭</div>
+    <div class="stoneGrid" id="mStones"></div>
+    <button class="close" id="mClose">完成</button>
+  </div>
+</div>
+
 <script>
 "use strict";
-/* ===================== PWA 註冊 ===================== */
+/* ===== PWA ===== */
 if('serviceWorker' in navigator){
-  window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 }
-/* ===================== 全域狀態 ===================== */
-const ROWS=3, COLS=5, CC=2;            // 3列 5行，中央直行=index2
-let imgEl=null;                        // 來源 Image
-let corners=null;                      // 四角(影像座標) [TL,TR,BR,BL]
-let cells=[];                          // cells[r][c] = {base:'sand'|'moss', stone:0..5}
-const STONE_ICONS=['', '□','△','◇','▲','凵'];   // 0無 1橫 2小立 3臥 4大立 5舟
+/* ===== 常數 / 狀態 ===== */
+const ROWS=3, COLS=5, CC=2;
+const STONE_ICONS=['','□','△','◇','▲','凵'];          // 0無 1橫 2小立 3臥 4大立 5舟
 const STONE_NAME=['無','橫石','小立石','臥石','大立石','舟石'];
 const $=id=>document.getElementById(id);
+let imgEl=null, corners=null, cells=[];
+let cw=0, ch=0, idata=null;                           // 影像像素快取
+let refSand=null, refMoss=null, refStone=null;        // 校正色 [R,G,B]
+let calibMode=null;                                   // 'sand'|'moss'|'stone'|null
+let editing=null;                                     // 正在修正的 {r,c}
+let symSel=[false,false,false];                       // 各列是否對稱(可手動)
 
-/* ===================== 取得照片 ===================== */
+/* ===== 取得照片 ===== */
 let stream=null;
 $('btnCam').onclick=async()=>{
-  try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+  try{ stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
     const v=$('video'); v.srcObject=stream; await v.play();
     v.style.display='block'; $('btnShot').style.display='block';
   }catch(e){ alert('無法開啟相機，改用「上傳/拍照」。\n'+e.message); }
 };
 $('btnShot').onclick=()=>{
-  const v=$('video');
-  const c=document.createElement('canvas');
-  c.width=v.videoWidth; c.height=v.videoHeight;
-  c.getContext('2d').drawImage(v,0,0);
+  const v=$('video'), c=document.createElement('canvas');
+  c.width=v.videoWidth; c.height=v.videoHeight; c.getContext('2d').drawImage(v,0,0);
   loadImage(c.toDataURL('image/jpeg',0.9));
-  if(stream){ stream.getTracks().forEach(t=>t.stop()); }
+  if(stream) stream.getTracks().forEach(t=>t.stop());
   v.style.display='none'; $('btnShot').style.display='none';
 };
-$('file').onchange=e=>{
-  const f=e.target.files[0]; if(!f) return;
-  const r=new FileReader();
-  r.onload=()=>loadImage(r.result);
-  r.readAsDataURL(f);
-};
+$('file').onchange=e=>{ const f=e.target.files[0]; if(!f)return;
+  const r=new FileReader(); r.onload=()=>loadImage(r.result); r.readAsDataURL(f); };
+function loadImage(src){ const im=new Image(); im.onload=()=>{imgEl=im; setupStage();}; im.src=src; }
 
-function loadImage(src){
-  const im=new Image();
-  im.onload=()=>{ imgEl=im; setupStage(); };
-  im.src=src;
-}
-
-/* ===================== 影像 + 四角覆蓋 ===================== */
-let cw=0, ch=0;
+/* ===== 影像舞台 ===== */
 function setupStage(){
-  const cv=$('img'); const maxW=Math.min(520, document.body.clientWidth-26);
+  const cv=$('img'), maxW=Math.min(520, document.body.clientWidth-26);
   const scale=maxW/imgEl.width;
   cw=Math.round(imgEl.width*scale); ch=Math.round(imgEl.height*scale);
-  cv.width=cw; cv.height=ch;
-  cv.getContext('2d').drawImage(imgEl,0,0,cw,ch);
-  // 預設四角(留邊),使用者再拖
-  corners=[ [cw*0.10,ch*0.18],[cw*0.90,ch*0.18],[cw*0.90,ch*0.82],[cw*0.10,ch*0.82] ];
-  $('alignCard').style.display='block';
-  $('stage').style.display='block';
-  drawOverlay();
-  $('alignCard').scrollIntoView({behavior:'smooth'});
+  cv.width=cw; cv.height=ch; cv.getContext('2d').drawImage(imgEl,0,0,cw,ch);
+  // 像素快取(供校正取色與分析)
+  const oc=document.createElement('canvas'); oc.width=cw; oc.height=ch;
+  const octx=oc.getContext('2d'); octx.drawImage(imgEl,0,0,cw,ch);
+  idata=octx.getImageData(0,0,cw,ch).data;
+  corners=[[cw*0.10,ch*0.18],[cw*0.90,ch*0.18],[cw*0.90,ch*0.82],[cw*0.10,ch*0.82]];
+  cells=[]; refSand=refMoss=refStone=null; calibMode=null;
+  ['swSand','swMoss','swStone'].forEach(id=>$(id).style.background='#0000');
+  ['cSand','cMoss','cStone'].forEach(id=>$(id).classList.remove('on'));
+  $('alignCard').style.display='block'; $('stage').style.display='block';
+  $('gridCard').style.display='none'; $('scoreCard').style.display='none';
+  drawOverlay(); $('alignCard').scrollIntoView({behavior:'smooth'});
 }
 
+/* ===== B 透視轉換 (單位正方形 → 四角四邊形) ===== */
+function homography(c){
+  const [x0,y0]=c[0],[x1,y1]=c[1],[x2,y2]=c[2],[x3,y3]=c[3]; // TL,TR,BR,BL = (0,0)(1,0)(1,1)(0,1)
+  const dx1=x1-x2, dy1=y1-y2, dx2=x3-x2, dy2=y3-y2;
+  const sx=x0-x1+x2-x3, sy=y0-y1+y2-y3;
+  const den=dx1*dy2-dy1*dx2;
+  let g,h;
+  if(Math.abs(den)<1e-6){ g=0; h=0; } else { g=(sx*dy2-sy*dx2)/den; h=(dx1*sy-dy1*sx)/den; }
+  return [ x1-x0+g*x1, x3-x0+h*x3, x0,
+           y1-y0+g*y1, y3-y0+h*y3, y0,
+           g, h, 1 ];
+}
+function mapPt(H,u,v){ const w=H[6]*u+H[7]*v+H[8];
+  return [(H[0]*u+H[1]*v+H[2])/w,(H[3]*u+H[4]*v+H[5])/w]; }
+
+/* ===== 覆蓋層：格線 + 角點 + (分析後)偵測疊圖 ===== */
 function drawOverlay(){
-  const svg=$('overlay');
-  svg.setAttribute('viewBox',`0 0 ${cw} ${ch}`);
-  const [TL,TR,BR,BL]=corners;
-  // 內部 3x5 網格線(雙線性插值)
+  if(!corners||!cw) return;                            // 純手動(未載入照片)時略過
+  const svg=$('overlay'); svg.setAttribute('viewBox',`0 0 ${cw} ${ch}`);
+  const H=homography(corners), R=Math.max(cw,ch);
   let lines='';
-  const P=(u,v)=>{
-    const top=[TL[0]+(TR[0]-TL[0])*u, TL[1]+(TR[1]-TL[1])*u];
-    const bot=[BL[0]+(BR[0]-BL[0])*u, BL[1]+(BR[1]-BL[1])*u];
-    return [top[0]+(bot[0]-top[0])*v, top[1]+(bot[1]-top[1])*v];
-  };
-  for(let c=0;c<=COLS;c++){const a=P(c/COLS,0),b=P(c/COLS,1);
+  for(let c=0;c<=COLS;c++){const a=mapPt(H,c/COLS,0),b=mapPt(H,c/COLS,1);
     lines+=`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}"/>`;}
-  for(let r=0;r<=ROWS;r++){const a=P(0,r/ROWS),b=P(1,r/ROWS);
+  for(let r=0;r<=ROWS;r++){const a=mapPt(H,0,r/ROWS),b=mapPt(H,1,r/ROWS);
     lines+=`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}"/>`;}
   const poly=corners.map(p=>p.join(',')).join(' ');
-  let dots='';
-  corners.forEach((p,i)=>dots+=`<circle cx="${p[0]}" cy="${p[1]}" r="${Math.max(cw,ch)*0.022}"
-    fill="#b07d4f" stroke="#fff" stroke-width="2" data-i="${i}"/>`);
-  svg.innerHTML=`<polygon points="${poly}" fill="rgba(176,125,79,.12)" stroke="#d8b25e" stroke-width="2"/>
-    <g stroke="#d8b25e" stroke-width="1" opacity=".7">${lines}</g>${dots}`;
+  let dots=''; corners.forEach((p,i)=>dots+=`<circle cx="${p[0]}" cy="${p[1]}" r="${R*0.022}"
+    fill="#b07d4f" stroke="#fff" stroke-width="2"/>`);
+  // E 偵測疊圖
+  let marks='';
+  if(cells.length){
+    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+      const ce=cells[r][c], p=mapPt(H,(c+0.5)/COLS,(r+0.5)/ROWS);
+      const col=ce.base==='moss'?'#5f7d4a':'#d8cfbd';
+      marks+=`<circle cx="${p[0]}" cy="${p[1]}" r="${R*0.026}" fill="${col}" opacity=".55" stroke="#0008"/>`;
+      const ic = ce.stone===-1?'?':(STONE_ICONS[ce.stone]||'');
+      if(ic) marks+=`<text x="${p[0]}" y="${p[1]+R*0.012}" font-size="${R*0.04}" text-anchor="middle"
+        fill="${ce.stone===-1?'#c2614f':'#111'}" font-weight="bold">${ic}</text>`;
+    }
+  }
+  svg.innerHTML=`<polygon points="${poly}" fill="rgba(176,125,79,.10)" stroke="#d8b25e" stroke-width="2"/>
+    <g stroke="#d8b25e" stroke-width="1" opacity=".7">${lines}</g>${marks}${dots}`;
 }
 
-/* 拖曳四角 */
+/* ===== 互動：拖角 / 校正取色 ===== */
 let drag=-1;
-function evtPt(e){
-  const svg=$('overlay'); const rect=svg.getBoundingClientRect();
-  const t=e.touches?e.touches[0]:e;
-  return [ (t.clientX-rect.left)/rect.width*cw, (t.clientY-rect.top)/rect.height*ch ];
+function evtPt(e){ const rect=$('overlay').getBoundingClientRect(); const t=e.touches?e.touches[0]:e;
+  return [(t.clientX-rect.left)/rect.width*cw,(t.clientY-rect.top)/rect.height*ch]; }
+function sampleColor(x,y){ // 取 5x5 平均
+  let R=0,G=0,B=0,n=0;
+  for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){
+    const px=Math.round(x+dx),py=Math.round(y+dy);
+    if(px<0||py<0||px>=cw||py>=ch)continue;
+    const i=(py*cw+px)*4; R+=idata[i];G+=idata[i+1];B+=idata[i+2];n++;
+  } return n?[R/n,G/n,B/n]:[128,128,128];
 }
 function startDrag(e){
-  const p=evtPt(e); let best=-1,bd=1e9;
-  corners.forEach((c,i)=>{const d=Math.hypot(c[0]-p[0],c[1]-p[1]); if(d<bd){bd=d;best=i;}});
-  if(bd< Math.max(cw,ch)*0.10){ drag=best; e.preventDefault(); }
-}
-function moveDrag(e){
-  if(drag<0) return; e.preventDefault();
   const p=evtPt(e);
-  corners[drag]=[Math.max(0,Math.min(cw,p[0])),Math.max(0,Math.min(ch,p[1]))];
-  drawOverlay();
+  if(calibMode){ // 校正取色：點哪取哪
+    const col=sampleColor(p[0],p[1]); const cs=`rgb(${col.map(v=>Math.round(v)).join(',')})`;
+    if(calibMode==='sand'){refSand=col;$('swSand').style.background=cs;}
+    if(calibMode==='moss'){refMoss=col;$('swMoss').style.background=cs;}
+    if(calibMode==='stone'){refStone=col;$('swStone').style.background=cs;}
+    $('c'+calibMode[0].toUpperCase()+calibMode.slice(1)).classList.remove('on');
+    calibMode=null; e.preventDefault(); return;
+  }
+  let best=-1,bd=1e9; corners.forEach((c,i)=>{const d=Math.hypot(c[0]-p[0],c[1]-p[1]); if(d<bd){bd=d;best=i;}});
+  if(bd<Math.max(cw,ch)*0.10){ drag=best; e.preventDefault(); }
 }
+function moveDrag(e){ if(drag<0)return; e.preventDefault(); const p=evtPt(e);
+  corners[drag]=[Math.max(0,Math.min(cw,p[0])),Math.max(0,Math.min(ch,p[1]))]; drawOverlay(); }
 function endDrag(){ drag=-1; }
 ['mousedown','touchstart'].forEach(ev=>$('overlay').addEventListener(ev,startDrag,{passive:false}));
 ['mousemove','touchmove'].forEach(ev=>window.addEventListener(ev,moveDrag,{passive:false}));
 ['mouseup','touchend'].forEach(ev=>window.addEventListener(ev,endDrag));
+function setCalib(mode,btn){ calibMode=(calibMode===mode)?null:mode;
+  ['cSand','cMoss','cStone'].forEach(id=>$(id).classList.remove('on'));
+  if(calibMode) btn.classList.add('on'); }
+$('cSand').onclick=function(){setCalib('sand',this);};
+$('cMoss').onclick=function(){setCalib('moss',this);};
+$('cStone').onclick=function(){setCalib('stone',this);};
 
-/* ===================== 影像分析 ===================== */
+/* ===== A+B 分析 ===== */
+function dist2(a,b){const dr=a[0]-b[0],dg=a[1]-b[1],db=a[2]-b[2];return dr*dr+dg*dg+db*db;}
 $('btnAnalyze').onclick=analyze;
 function analyze(){
-  // 在離屏 canvas 取原圖像素
-  const oc=document.createElement('canvas');
-  oc.width=cw; oc.height=ch;
-  const octx=oc.getContext('2d');
-  octx.drawImage(imgEl,0,0,cw,ch);
-  const data=octx.getImageData(0,0,cw,ch).data;
-  const [TL,TR,BR,BL]=corners;
-  const P=(u,v)=>{
-    const top=[TL[0]+(TR[0]-TL[0])*u, TL[1]+(TR[1]-TL[1])*u];
-    const bot=[BL[0]+(BR[0]-BL[0])*u, BL[1]+(BR[1]-BL[1])*u];
-    return [top[0]+(bot[0]-top[0])*v, top[1]+(bot[1]-top[1])*v];
-  };
+  if(!idata){alert('請先取得照片');return;}
+  const H=homography(corners);
   cells=[];
-  for(let r=0;r<ROWS;r++){
-    const rowArr=[];
+  for(let r=0;r<ROWS;r++){ const rowArr=[];
     for(let c=0;c<COLS;c++){
-      // 取格內 30%~70% 區域取樣
-      let n=0, sumR=0,sumG=0,sumB=0, greenN=0, darkN=0, total=0;
-      for(let su=0.28;su<=0.72;su+=0.06){
-        for(let sv=0.28;sv<=0.72;sv+=0.06){
-          const pt=P((c+su)/COLS,(r+sv)/ROWS);
-          const x=Math.round(pt[0]), y=Math.round(pt[1]);
-          if(x<0||y<0||x>=cw||y>=ch) continue;
-          const idx=(y*cw+x)*4;
-          const R=data[idx],G=data[idx+1],B=data[idx+2];
-          sumR+=R;sumG+=G;sumB+=B;n++; total++;
-          const bright=(R+G+B)/3;
-          if(bright<70) darkN++;                                  // 暗 → 石頭候選
-          if(G>R*1.08 && G>B*1.05 && bright>45 && bright<200) greenN++; // 綠 → 苔
-        }
+      let sand=0,moss=0,stone=0,total=0;
+      for(let su=0.25;su<=0.75;su+=0.05)for(let sv=0.25;sv<=0.75;sv+=0.05){
+        const pt=mapPt(H,(c+su)/COLS,(r+sv)/ROWS);
+        const x=Math.round(pt[0]),y=Math.round(pt[1]);
+        if(x<0||y<0||x>=cw||y>=ch)continue;
+        const i=(y*cw+x)*4, px=[idata[i],idata[i+1],idata[i+2]];
+        const bright=(px[0]+px[1]+px[2])/3; total++;
+        // 先判石頭
+        let isStone;
+        if(refStone) isStone = dist2(px,refStone) < dist2(px,refSand||[210,200,180]) &&
+                               dist2(px,refStone) < dist2(px,refMoss||[95,125,74]) &&
+                               dist2(px,refStone) < 6000;
+        else isStone = bright<70;
+        if(isStone){ stone++; continue; }
+        // 砂 vs 苔
+        let isMoss;
+        if(refSand&&refMoss) isMoss = dist2(px,refMoss) < dist2(px,refSand);
+        else isMoss = (px[1]>px[0]*1.08 && px[1]>px[2]*1.05 && bright>45 && bright<200);
+        if(isMoss) moss++; else sand++;
       }
-      if(n===0){rowArr.push({base:'sand',stone:0});continue;}
-      const darkFrac=darkN/total, greenFrac=greenN/total;
-      // 基底：綠多→苔；否則砂(石頭壓在磚上,以非暗區綠比例判斷)
-      const base = greenFrac>0.22 ? 'moss' : 'sand';
-      // 石頭：暗區比例高
-      let stone=0;
-      if(darkFrac>0.12){
-        // 依暗區大小粗估：小→小立/橫，大→大立/舟
-        stone = darkFrac>0.42 ? 4 : (darkFrac>0.25 ? 3 : 1);
-      }
-      rowArr.push({base, stone});
+      if(total===0){ rowArr.push({base:'sand',stone:0}); continue; }
+      const stoneFrac=stone/total;
+      const base=(moss>sand)?'moss':'sand';
+      // D 石頭不亂猜：偵測到就標 -1(未指定種類)
+      const st = stoneFrac>0.15 ? -1 : 0;
+      rowArr.push({base,stone:st});
     }
     cells.push(rowArr);
   }
-  renderGrid();
-  score();
-  $('gridCard').style.display='block';
-  $('scoreCard').style.display='block';
+  // 對稱列預設：以砂/苔鏡像猜(僅起點，使用者再微調)
+  for(let r=0;r<ROWS;r++) symSel[r]=(cells[r][0].base===cells[r][4].base&&cells[r][1].base===cells[r][3].base);
+  renderSym();
+  renderGrid(); score(); drawOverlay();
+  $('gridCard').style.display='block'; $('scoreCard').style.display='block';
   $('gridCard').scrollIntoView({behavior:'smooth'});
 }
 
-/* ===================== 棋盤渲染 + 編輯 ===================== */
+/* ===== 略過拍照，純手動建立 ===== */
+function initBlankGrid(){
+  cells=[];
+  for(let r=0;r<ROWS;r++){ const a=[]; for(let c=0;c<COLS;c++)a.push({base:'sand',stone:0}); cells.push(a); }
+  symSel=[false,false,false]; renderSym(); renderGrid(); score();
+  $('gridCard').style.display='block'; $('scoreCard').style.display='block';
+  $('gridCard').scrollIntoView({behavior:'smooth'});
+}
+$('btnManual').onclick=initBlankGrid;
+
+/* ===== 對稱列手動切換 ===== */
+function renderSym(){ document.querySelectorAll('#symRow [data-row]')
+  .forEach(b=>b.classList.toggle('on',symSel[+b.dataset.row])); }
+document.querySelectorAll('#symRow [data-row]').forEach(b=>b.onclick=()=>{
+  symSel[+b.dataset.row]=!symSel[+b.dataset.row]; renderSym(); score(); });
+
+/* ===== C 棋盤渲染 + 修正面板 ===== */
 function renderGrid(){
   const g=$('grid'); g.innerHTML='';
   for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
-    const cell=cells[r][c];
-    const d=document.createElement('div');
-    d.className='cell '+cell.base+(c===CC?' cc':'');
+    const ce=cells[r][c], d=document.createElement('div');
+    d.className='cell '+ce.base+(c===CC?' cc':'');
+    const ic = ce.stone===-1?'?':(STONE_ICONS[ce.stone]||'·');
     d.innerHTML=`<span class="pos">${['上','中','下'][r]}${c+1}</span>
-      <span>${cell.base==='moss'?'苔':'砂'}</span>
-      <span class="stoneIco">${STONE_ICONS[cell.stone]||'·'}</span>`;
-    let lp=null;
-    const cycleStone=()=>{cell.stone=(cell.stone+1)%6; renderGrid(); score();};
-    const cycleBase=()=>{cell.base=cell.base==='sand'?'moss':'sand'; renderGrid(); score();};
-    d.onclick=()=>{ if(lp){clearTimeout(lp);lp=null;} cycleBase(); };
-    // 點石頭圖示 → 切石頭(阻止冒泡到 base)
-    d.querySelector('.stoneIco').onclick=(e)=>{e.stopPropagation(); cycleStone();};
-    // 長按 → 切石頭
-    d.addEventListener('touchstart',()=>{lp=setTimeout(()=>{cycleStone();lp=null;},500);},{passive:true});
-    d.addEventListener('touchend',()=>{if(lp){clearTimeout(lp);lp=null;}});
+      <span>${ce.base==='moss'?'苔':'砂'}</span>
+      <span class="stoneIco${ce.stone===-1?' q':''}">${ic}</span>`;
+    d.onclick=()=>openModal(r,c);
     g.appendChild(d);
   }
+  drawOverlay();
 }
+// 建立石頭選擇按鈕
+(function(){ const box=$('mStones');
+  for(let t=0;t<=5;t++){ const b=document.createElement('button'); b.className='sec'; b.dataset.stone=t;
+    b.innerHTML=`<span class="ic">${STONE_ICONS[t]||'·'}</span><span>${STONE_NAME[t]}</span>`;
+    box.appendChild(b);
+  }
+})();
+function openModal(r,c){ editing={r,c}; const ce=cells[r][c];
+  $('mTitle').textContent=`修正 ${['上','中','下'][r]}排 第${c+1}行`;
+  document.querySelectorAll('#modal [data-base]').forEach(b=>b.classList.toggle('on',b.dataset.base===ce.base));
+  document.querySelectorAll('#mStones [data-stone]').forEach(b=>b.classList.toggle('on',+b.dataset.stone===ce.stone));
+  $('modal').classList.add('show');
+}
+document.querySelectorAll('#modal [data-base]').forEach(b=>b.onclick=()=>{
+  cells[editing.r][editing.c].base=b.dataset.base;
+  document.querySelectorAll('#modal [data-base]').forEach(x=>x.classList.toggle('on',x===b));
+  renderGrid(); score();
+});
+document.querySelectorAll('#mStones [data-stone]').forEach(b=>b.onclick=()=>{
+  cells[editing.r][editing.c].stone=+b.dataset.stone;
+  document.querySelectorAll('#mStones [data-stone]').forEach(x=>x.classList.toggle('on',x===b));
+  renderGrid(); score();
+});
+$('mClose').onclick=()=>$('modal').classList.remove('show');
+$('modal').onclick=e=>{ if(e.target===$('modal')) $('modal').classList.remove('show'); };
 
-/* ===================== 計分(規則精算) ===================== */
+/* ===== 計分 ===== */
 ['m_circle','m_semi','m_break','m_allconn','m_name','m_virtue']
   .forEach(id=>{const el=$(id); if(el) el.addEventListener('input',score);});
-
 function score(){
-  const L=[]; // {lbl, val, tag}
-  // 取整數工具
+  const L=[];
   const isSand=(r,c)=>cells[r][c].base==='sand';
   const isMoss=(r,c)=>cells[r][c].base==='moss';
-  const stoneAt=(r,c)=>cells[r][c].stone;
-  const stones=[]; // {r,c,type}
-  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++)
-    if(stoneAt(r,c)>0) stones.push({r,c,type:stoneAt(r,c)});
-
-  // 1 基礎砂點：最大「全砂」矩形面積 ×1
+  const st=(r,c)=>cells[r][c].stone;                 // -1未指定 / 0無 / 1..5
+  const present=(r,c)=>st(r,c)===-1||st(r,c)>0;      // 有石頭(含未指定)
+  const stones=[]; let unknown=0;
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    if(st(r,c)===-1)unknown++;
+    if(present(r,c)) stones.push({r,c,type:st(r,c)});
+  }
+  // 1 基礎砂點：最大全砂矩形
   let maxSand=0;
   for(let r1=0;r1<ROWS;r1++)for(let r2=r1;r2<ROWS;r2++)
-    for(let c1=0;c1<COLS;c1++)for(let c2=c1;c2<COLS;c2++){
-      let ok=true;
-      for(let r=r1;r<=r2&&ok;r++)for(let c=c1;c<=c2;c++) if(!isSand(r,c)){ok=false;break;}
-      if(ok) maxSand=Math.max(maxSand,(r2-r1+1)*(c2-c1+1));
-    }
+   for(let c1=0;c1<COLS;c1++)for(let c2=c1;c2<COLS;c2++){
+     let ok=true; for(let r=r1;r<=r2&&ok;r++)for(let c=c1;c<=c2;c++) if(!isSand(r,c)){ok=false;break;}
+     if(ok) maxSand=Math.max(maxSand,(r2-r1+1)*(c2-c1+1));
+   }
   L.push({lbl:'1. 基礎砂點（最大全砂矩形）',val:maxSand});
-
-  // 2 基礎苔點：苔格 ×2
-  let mossN=0; for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++) if(isMoss(r,c)) mossN++;
+  // 2 苔點
+  let mossN=0; for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++) if(isMoss(r,c))mossN++;
   L.push({lbl:`2. 基礎苔點（${mossN} 格 ×2）`,val:mossN*2});
-
-  // 3 對稱獎勵：每對稱列 +5（CV 以同列鏡像格基底是否一致粗判，可手動於格面修正）
-  let symRows=0;
-  for(let r=0;r<ROWS;r++){
-    if(cells[r][0].base===cells[r][4].base && cells[r][1].base===cells[r][3].base) symRows++;
-  }
-  L.push({lbl:`3. 對稱獎勵（${symRows} 列 ×5）`,val:symRows*5,
-    tag:'※僅以砂/苔鏡像粗判，砂紋方向請自行確認'});
-
-  // 6 基礎石點：不同石種數 ×2
-  const types=new Set(stones.map(s=>s.type));
+  // 3 對稱(手動切換，預設由砂/苔鏡像猜)
+  const symRows=symSel.filter(Boolean).length;
+  L.push({lbl:`3. 對稱獎勵（${symRows} 列 ×5）`,val:symRows*5,tag:'※用上方「對稱列」按鈕手動指定'});
+  // 6 石種數(未指定不算)
+  const types=new Set(stones.filter(s=>s.type>0).map(s=>s.type));
   L.push({lbl:`6. 基礎石點（${types.size} 種 ×2）`,val:types.size*2});
-
-  // 7 石組布局 A~F
-  let layout=0; const lz=[];
-  // A 騎士:2x3 區塊內恰兩石且呈馬步(差(±1,±2)或(±2,±1))；B 對角:3x3 內恰三石對角
-  // 以「未被 A/B 佔用」標記避免重複
-  const usedAB=new Set(); const key=s=>s.r+','+s.c;
-  // B 先（分高）：3x3 視窗中恰好三顆且在同一對角線
+  // 7 布局 A~F
+  let layout=0; const lz=[]; const usedAB=new Set(); const key=s=>s.r+','+s.c;
   for(let r=0;r<=ROWS-3;r++)for(let c=0;c<=COLS-3;c++){
     const inn=stones.filter(s=>s.r>=r&&s.r<r+3&&s.c>=c&&s.c<c+3);
     if(inn.length===3){
-      const diag1=inn.every(s=>(s.r-r)===(s.c-c));
-      const diag2=inn.every(s=>(s.r-r)===(2-(s.c-c)));
-      if((diag1||diag2) && inn.every(s=>!usedAB.has(key(s)))){
-        layout+=7; lz.push('B對角+7'); inn.forEach(s=>usedAB.add(key(s)));
-      }
+      const d1=inn.every(s=>(s.r-r)===(s.c-c)), d2=inn.every(s=>(s.r-r)===(2-(s.c-c)));
+      if((d1||d2)&&inn.every(s=>!usedAB.has(key(s)))){layout+=7;lz.push('B對角+7');inn.forEach(s=>usedAB.add(key(s)));}
     }
   }
-  // A 騎士：2x3 或 3x2 視窗中恰兩石且為馬步關係
-  const windows=[];
-  for(let r=0;r<=ROWS-2;r++)for(let c=0;c<=COLS-3;c++)windows.push([r,c,2,3]);
-  for(let r=0;r<=ROWS-3;r++)for(let c=0;c<=COLS-2;c++)windows.push([r,c,3,2]);
-  for(const [r,c,h,w] of windows){
+  const wins=[]; for(let r=0;r<=ROWS-2;r++)for(let c=0;c<=COLS-3;c++)wins.push([r,c,2,3]);
+  for(let r=0;r<=ROWS-3;r++)for(let c=0;c<=COLS-2;c++)wins.push([r,c,3,2]);
+  for(const [r,c,h,w] of wins){
     const inn=stones.filter(s=>s.r>=r&&s.r<r+h&&s.c>=c&&s.c<c+w);
-    if(inn.length===2 && inn.every(s=>!usedAB.has(key(s)))){
-      const dr=Math.abs(inn[0].r-inn[1].r), dc=Math.abs(inn[0].c-inn[1].c);
-      if((dr===1&&dc===2)||(dr===2&&dc===1)){
-        layout+=5; lz.push('A騎士+5'); inn.forEach(s=>usedAB.add(key(s)));
-      }
+    if(inn.length===2&&inn.every(s=>!usedAB.has(key(s)))){
+      const dr=Math.abs(inn[0].r-inn[1].r),dc=Math.abs(inn[0].c-inn[1].c);
+      if((dr===1&&dc===2)||(dr===2&&dc===1)){layout+=5;lz.push('A騎士+5');inn.forEach(s=>usedAB.add(key(s)));}
     }
   }
-  // C 蓬萊山：上排相鄰兩大立石(type4)且皆在苔上，限一次 +10
-  for(let c=0;c<COLS-1;c++){
-    if(stoneAt(0,c)===4&&stoneAt(0,c+1)===4&&isMoss(0,c)&&isMoss(0,c+1)){ layout+=10; lz.push('C蓬萊山+10'); break; }
-  }
-  // D 三尊石：上排 苔上 小(2)-大(4)-小(2) 連續，限一次 +15
-  for(let c=0;c<COLS-2;c++){
-    if(stoneAt(0,c)===2&&stoneAt(0,c+1)===4&&stoneAt(0,c+2)===2&&
-       isMoss(0,c)&&isMoss(0,c+1)&&isMoss(0,c+2)){ layout+=15; lz.push('D三尊石+15'); break; }
-  }
-  // E 中央直行臥石(type3) 每顆 +3
-  let recl=0; for(let r=0;r<ROWS;r++) if(stoneAt(r,CC)===3) recl++;
-  if(recl) { layout+=recl*3; lz.push('E臥石'+recl+'×3'); }
-  // F 舟石(type5)在底列 限一次 +3
-  for(let c=0;c<COLS;c++){ if(stoneAt(ROWS-1,c)===5){ layout+=3; lz.push('F舟石+3'); break; } }
+  for(let c=0;c<COLS-1;c++) if(st(0,c)===4&&st(0,c+1)===4&&isMoss(0,c)&&isMoss(0,c+1)){layout+=10;lz.push('C蓬萊山+10');break;}
+  for(let c=0;c<COLS-2;c++) if(st(0,c)===2&&st(0,c+1)===4&&st(0,c+2)===2&&isMoss(0,c)&&isMoss(0,c+1)&&isMoss(0,c+2)){layout+=15;lz.push('D三尊石+15');break;}
+  let recl=0; for(let r=0;r<ROWS;r++) if(st(r,CC)===3)recl++; if(recl){layout+=recl*3;lz.push('E臥石'+recl+'×3');}
+  for(let c=0;c<COLS;c++) if(st(ROWS-1,c)===5){layout+=3;lz.push('F舟石+3');break;}
   L.push({lbl:'7. 石組布局 '+(lz.length?'('+lz.join(' / ')+')':'(無)'),val:layout});
-
-  // 手動項目
-  const circle=+($('m_circle').value||0), semi=+($('m_semi').value||0);
-  const brk=+($('m_break').value||0), allc=+($('m_allconn').value||0)>0?1:0;
-  const nameG=+($('m_name').value||0), virtue=+($('m_virtue').value||0);
+  // 手動
+  const circle=+($('m_circle').value||0),semi=+($('m_semi').value||0);
+  const brk=+($('m_break').value||0),allc=+($('m_allconn').value||0)>0?1:0;
+  const nameG=+($('m_name').value||0),virtue=+($('m_virtue').value||0);
   L.push({lbl:`4. 漩渦（圓 ${circle}×2 + 半圓 ${semi}×1）`,val:circle*2+semi});
-  const sandEval=(allc?7:0) - brk*2;
-  L.push({lbl:`5. 砂紋評估（${allc?'全連+7 ':''}不連 ${brk}×−2）`,val:sandEval});
+  L.push({lbl:`5. 砂紋評估（${allc?'全連+7 ':''}不連 ${brk}×−2）`,val:(allc?7:0)-brk*2});
   L.push({lbl:'8. 名庭卡',val:nameG});
   L.push({lbl:`9. 剩餘德點（${virtue}×1）`,val:virtue});
-
   // 渲染
-  const box=$('scoreList'); box.innerHTML='';
-  let total=0;
-  L.forEach(it=>{
-    total+=it.val;
-    const d=document.createElement('div'); d.className='score-line';
+  const box=$('scoreList'); box.innerHTML=''; let total=0;
+  L.forEach(it=>{ total+=it.val; const d=document.createElement('div'); d.className='score-line';
     d.innerHTML=`<span class="lbl">${it.lbl}${it.tag?`<br><span class="warn">${it.tag}</span>`:''}</span>
-      <span class="v ${it.val<0?'neg':''}">${it.val>=0?'+':''}${it.val}</span>`;
-    box.appendChild(d);
-  });
+      <span class="v ${it.val<0?'neg':''}">${it.val>=0?'+':''}${it.val}</span>`; box.appendChild(d); });
   $('totalScore').textContent=total;
+  // D 未指定石頭提醒
+  const bn=$('qBanner');
+  if(unknown>0){ bn.style.display='block';
+    bn.textContent=`⚠ 還有 ${unknown} 顆石頭只偵測到「有」、種類未指定（顯示 ?）。請點該格選種類，否則石種數與 C/D/E/F 獎勵不會計入。`;
+  } else bn.style.display='none';
 }
 </script>
 </body>
