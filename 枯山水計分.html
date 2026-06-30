@@ -97,7 +97,16 @@
   .total .big{font-size:40px;font-weight:800;color:var(--gold);font-variant-numeric:tabular-nums;}
   .tag{font-size:10px;color:var(--muted);}
   .warn{font-size:11px;color:var(--accent2);}
-  details{margin-top:8px;} summary{cursor:pointer;font-size:12px;color:var(--muted);}
+  details{margin-top:8px;} summary{cursor:pointer;font-size:13px;color:var(--gold);}
+  .mItem{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px dashed var(--line);}
+  .mItem:last-child{border-bottom:none;}
+  .mItem .ic{flex:0 0 auto;}
+  .mLbl{flex:1;font-size:13px;line-height:1.35;}
+  .stepper{display:flex;align-items:center;gap:4px;flex:0 0 auto;}
+  .stepper button{width:40px;height:40px;padding:0;font-size:22px;border-radius:10px;}
+  .mVal{min-width:32px;text-align:center;font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;}
+  .toggle{min-width:64px;}
+  .toggle.on{background:var(--accent2);color:#10210a;}
   /* 修正面板 modal */
   .modal{position:fixed;inset:0;background:#000a;display:none;align-items:flex-end;
     justify-content:center;z-index:50;}
@@ -106,11 +115,13 @@
     width:100%;max-width:560px;padding:16px 14px 24px;}
   .sheet h3{margin:0 0 10px;font-size:15px;color:var(--gold);}
   .seg{display:flex;gap:6px;margin:6px 0 12px;}
-  .seg button{flex:1;}
+  .seg button{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:9px 4px;font-size:13px;}
   .stoneGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
-  .stoneGrid button{display:flex;flex-direction:column;gap:2px;align-items:center;font-size:12px;
+  .stoneGrid button{display:flex;flex-direction:column;gap:3px;align-items:center;font-size:12px;
     padding:10px 4px;}
-  .stoneGrid button .ic{font-size:22px;line-height:1;}
+  .ic{display:flex;align-items:center;justify-content:center;line-height:1;}
+  .ic svg{display:block;}
+  .cell .stoneIco svg{display:block;}
   .sheet .close{width:100%;margin-top:12px;}
 </style>
 </head>
@@ -154,7 +165,7 @@
 
 <!-- 3 偵測結果 -->
 <div class="card" id="gridCard" style="display:none;">
-  <h2><span class="step">3</span> 偵測結果（點格可修正）</h2>
+  <h2><span class="step">3</span> 偵測結果 ・ 人工微調</h2>
   <div class="grid" id="grid"></div>
   <div class="banner" id="qBanner"></div>
   <div class="legend">
@@ -170,6 +181,10 @@
       <button class="sec" data-row="2">下排對稱</button>
     </div>
   </div>
+  <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px;">
+    <span class="tag">其他人工項目（漩渦／砂紋／名庭／德點，用 ＋／− 調整）</span>
+    <div id="manualBox" style="margin-top:8px;"></div>
+  </div>
 </div>
 
 <!-- 4 計分 -->
@@ -177,24 +192,6 @@
   <h2><span class="step">4</span> 計分結果</h2>
   <div id="scoreList"></div>
   <div class="total"><span>總分</span><span class="big" id="totalScore">0</span></div>
-  <details>
-    <summary>無法從照片判讀的項目（請手動確認）</summary>
-    <div style="margin-top:8px;">
-      <div class="score-line"><span class="lbl">漩渦：完整圓「關聯磚數」(×2)</span>
-        <input type="number" id="m_circle" value="0" min="0"></div>
-      <div class="score-line"><span class="lbl">漩渦：半圓「關聯磚數」(×1)</span>
-        <input type="number" id="m_semi" value="0" min="0"></div>
-      <div class="score-line"><span class="lbl">砂紋不連接「處數」(每處 −2)</span>
-        <input type="number" id="m_break" value="0" min="0"></div>
-      <div class="score-line"><span class="lbl">全 15 格砂紋皆連接 (+7)</span>
-        <input type="number" id="m_allconn" value="0" min="0" max="1"></div>
-      <div class="score-line"><span class="lbl">名庭卡 加分</span>
-        <input type="number" id="m_name" value="0" min="0"></div>
-      <div class="score-line"><span class="lbl">剩餘德點 (每點 +1)</span>
-        <input type="number" id="m_virtue" value="0" min="0" max="6"></div>
-      <div class="hint">改完數字會即時更新總分。</div>
-    </div>
-  </details>
 </div>
 
 <!-- 修正面板 -->
@@ -222,6 +219,41 @@ if('serviceWorker' in navigator){
 const ROWS=3, COLS=5, CC=2;
 const STONE_ICONS=['','□','△','◇','▲','凵'];          // 0無 1橫 2小立 3臥 4大立 5舟
 const STONE_NAME=['無','橫石','小立石','臥石','大立石','舟石'];
+/* 石頭側面剪影(SVG，直覺、離線、放大不糊) */
+function STONE_SVG(t,s=32){
+  const inner={
+    1:`<ellipse cx="24" cy="32" rx="18" ry="7" fill="#4a4a4a"/>`,                                   // 橫石：矮寬
+    2:`<path d="M24 13 C20 23 19 35 19 39 L29 39 C29 35 28 23 24 13Z" fill="#4a4a4a"/>`,             // 小立石：小直立
+    3:`<ellipse cx="24" cy="30" rx="17" ry="8" transform="rotate(-20 24 30)" fill="#4a4a4a"/>`,     // 臥石：斜躺
+    4:`<path d="M24 5 C17 18 16 35 18 39 L30 39 C32 35 31 18 24 5Z" fill="#6b6b6b"/>`,               // 大立石：高直立(較淺)
+    5:`<path d="M6 25 C16 41 32 41 42 25 C34 21 14 21 6 25Z" fill="#3a3a3a"/>`                       // 舟石：船身
+  }[t]||'';
+  return `<svg width="${s}" height="${s}" viewBox="0 0 48 44" aria-hidden="true">${inner}</svg>`;
+}
+/* 砂磚(波浪紋) / 苔磚(綠) */
+function TILE_SVG(base,s=30){
+  if(base==='moss') return `<svg width="${s}" height="${s}" viewBox="0 0 48 48"><rect width="48" height="48" rx="7" fill="#5f7d4a"/></svg>`;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 48 48"><rect width="48" height="48" rx="7" fill="#d8cfbd"/>`+
+    `<g stroke="#b3a78e" stroke-width="2.4" fill="none"><path d="M3 15 q10 -7 21 0 t21 0"/>`+
+    `<path d="M3 27 q10 -7 21 0 t21 0"/><path d="M3 39 q10 -7 21 0 t21 0"/></g></svg>`;
+}
+/* 手動項目示意圖 */
+function whirlSVG(full,s=32){
+  const bg=`<rect width="48" height="48" rx="7" fill="#d8cfbd"/>`,st=`fill="none" stroke="#8a7c5f" stroke-width="2.4"`;
+  if(full) return `<svg width="${s}" height="${s}" viewBox="0 0 48 48">${bg}<g ${st}><circle cx="24" cy="24" r="5"/><circle cx="24" cy="24" r="11"/><circle cx="24" cy="24" r="17"/></g></svg>`;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 48 48">${bg}<g ${st}><path d="M7 28 a17 17 0 0 1 34 0"/><path d="M13 28 a11 11 0 0 1 22 0"/><path d="M19 28 a5 5 0 0 1 10 0"/></g></svg>`;
+}
+function breakSVG(s=32){ return `<svg width="${s}" height="${s}" viewBox="0 0 48 48">`+
+  `<rect width="22" height="48" rx="5" fill="#d8cfbd"/><rect x="26" width="22" height="48" rx="5" fill="#d8cfbd"/>`+
+  `<g stroke="#8a7c5f" stroke-width="2.2" fill="none"><path d="M2 17 q5 -5 11 0"/><path d="M2 31 q5 -5 11 0"/>`+
+  `<path d="M28 24 q5 -5 11 0"/><path d="M28 38 q5 -5 11 0"/></g>`+
+  `<line x1="24" y1="3" x2="24" y2="45" stroke="#c2614f" stroke-width="2.6" stroke-dasharray="3 3"/></svg>`; }
+function alignOKSVG(s=32){ return `<svg width="${s}" height="${s}" viewBox="0 0 48 48"><rect width="48" height="48" rx="7" fill="#d8cfbd"/>`+
+  `<g stroke="#8a7c5f" stroke-width="2.4" fill="none"><path d="M2 17 q11 -6 22 0 t22 0"/><path d="M2 31 q11 -6 22 0 t22 0"/></g></svg>`; }
+function cardSVG(s=32){ return `<svg width="${s}" height="${s}" viewBox="0 0 48 48"><rect x="9" y="5" width="30" height="38" rx="4" fill="#2c251d" stroke="#d8b25e" stroke-width="2"/>`+
+  `<path d="M24 14 l3 6 6 1 -4.5 4 1 6 -5.5 -3 -5.5 3 1 -6 -4.5 -4 6 -1z" fill="#d8b25e"/></svg>`; }
+function virtueSVG(s=32){ return `<svg width="${s}" height="${s}" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16" fill="#d8b25e"/>`+
+  `<text x="24" y="31" font-size="19" text-anchor="middle" fill="#3a2f12" font-weight="bold">德</text></svg>`; }
 const $=id=>document.getElementById(id);
 let imgEl=null, corners=null, cells=[];
 let cw=0, ch=0, idata=null;                           // 影像像素快取
@@ -418,22 +450,26 @@ function renderGrid(){
   for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
     const ce=cells[r][c], d=document.createElement('div');
     d.className='cell '+ce.base+(c===CC?' cc':'');
-    const ic = ce.stone===-1?'?':(STONE_ICONS[ce.stone]||'·');
+    const stoneVis = ce.stone===-1 ? '<span class="stoneIco q">?</span>'
+      : (ce.stone>0 ? `<span class="stoneIco">${STONE_SVG(ce.stone,30)}</span>` : '<span class="stoneIco">·</span>');
     d.innerHTML=`<span class="pos">${['上','中','下'][r]}${c+1}</span>
-      <span>${ce.base==='moss'?'苔':'砂'}</span>
-      <span class="stoneIco${ce.stone===-1?' q':''}">${ic}</span>`;
+      <span>${ce.base==='moss'?'苔':'砂'}</span>${stoneVis}`;
     d.onclick=()=>openModal(r,c);
     g.appendChild(d);
   }
   drawOverlay();
 }
-// 建立石頭選擇按鈕
+// 建立石頭選擇按鈕(圖示)
 (function(){ const box=$('mStones');
   for(let t=0;t<=5;t++){ const b=document.createElement('button'); b.className='sec'; b.dataset.stone=t;
-    b.innerHTML=`<span class="ic">${STONE_ICONS[t]||'·'}</span><span>${STONE_NAME[t]}</span>`;
+    const ic = t===0 ? '<span style="font-size:24px">·</span>' : STONE_SVG(t,36);
+    b.innerHTML=`<span class="ic">${ic}</span><span>${STONE_NAME[t]}</span>`;
     box.appendChild(b);
   }
 })();
+// 基底(砂/苔)按鈕改用磚面圖示
+['sand','moss'].forEach(bs=>{ const el=document.querySelector(`#modal [data-base="${bs}"]`);
+  if(el) el.innerHTML=`<span class="ic">${TILE_SVG(bs,30)}</span><span>${bs==='sand'?'砂':'苔'}</span>`; });
 function openModal(r,c){ editing={r,c}; const ce=cells[r][c];
   $('mTitle').textContent=`修正 ${['上','中','下'][r]}排 第${c+1}行`;
   document.querySelectorAll('#modal [data-base]').forEach(b=>b.classList.toggle('on',b.dataset.base===ce.base));
@@ -453,10 +489,41 @@ document.querySelectorAll('#mStones [data-stone]').forEach(b=>b.onclick=()=>{
 $('mClose').onclick=()=>$('modal').classList.remove('show');
 $('modal').onclick=e=>{ if(e.target===$('modal')) $('modal').classList.remove('show'); };
 
+/* ===== 手動項目(圖示 + ＋／−) ===== */
+const M={circle:0,semi:0,brk:0,allconn:0,name:0,virtue:0};
+const MANUAL=[
+  {k:'circle',lbl:'漩渦・完整圓<br><span class="tag">每關聯磚 +2</span>',icon:whirlSVG(true),max:15},
+  {k:'semi',  lbl:'漩渦・半圓<br><span class="tag">每關聯磚 +1</span>',icon:whirlSVG(false),max:15},
+  {k:'brk',   lbl:'砂紋不連接<br><span class="tag">每處 −2</span>',icon:breakSVG(),max:30},
+  {k:'name',  lbl:'名庭卡 加分',icon:cardSVG(),max:40},
+  {k:'virtue',lbl:'剩餘德點<br><span class="tag">每點 +1（上限 6）</span>',icon:virtueSVG(),max:6},
+];
+function renderManual(){
+  const box=$('manualBox'); box.innerHTML='';
+  const tg=document.createElement('div'); tg.className='mItem';
+  tg.innerHTML=`<span class="ic">${alignOKSVG()}</span>
+    <span class="mLbl">全 15 格砂紋皆連接<br><span class="tag">達成 +7</span></span>
+    <button class="sec toggle ${M.allconn?'on':''}" id="t_allconn">${M.allconn?'已達成':'未達成'}</button>`;
+  box.appendChild(tg);
+  MANUAL.forEach(it=>{ const d=document.createElement('div'); d.className='mItem';
+    d.innerHTML=`<span class="ic">${it.icon}</span><span class="mLbl">${it.lbl}</span>
+      <div class="stepper"><button class="sec" data-k="${it.k}" data-d="-1">−</button>
+      <span class="mVal" id="v_${it.k}">${M[it.k]}</span>
+      <button class="sec" data-k="${it.k}" data-d="1">＋</button></div>`;
+    box.appendChild(d);
+  });
+  box.querySelectorAll('.stepper button').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.k, mx=MANUAL.find(x=>x.k===k).max;
+    M[k]=Math.max(0,Math.min(mx,M[k]+ +b.dataset.d)); $('v_'+k).textContent=M[k]; score();
+  });
+  $('t_allconn').onclick=function(){ M.allconn=M.allconn?0:1;
+    this.textContent=M.allconn?'已達成':'未達成'; this.classList.toggle('on',!!M.allconn); score(); };
+}
+renderManual();
+
 /* ===== 計分 ===== */
-['m_circle','m_semi','m_break','m_allconn','m_name','m_virtue']
-  .forEach(id=>{const el=$(id); if(el) el.addEventListener('input',score);});
 function score(){
+  if(!cells.length) return;
   const L=[];
   const isSand=(r,c)=>cells[r][c].base==='sand';
   const isMoss=(r,c)=>cells[r][c].base==='moss';
@@ -507,10 +574,8 @@ function score(){
   let recl=0; for(let r=0;r<ROWS;r++) if(st(r,CC)===3)recl++; if(recl){layout+=recl*3;lz.push('E臥石'+recl+'×3');}
   for(let c=0;c<COLS;c++) if(st(ROWS-1,c)===5){layout+=3;lz.push('F舟石+3');break;}
   L.push({lbl:'7. 石組布局 '+(lz.length?'('+lz.join(' / ')+')':'(無)'),val:layout});
-  // 手動
-  const circle=+($('m_circle').value||0),semi=+($('m_semi').value||0);
-  const brk=+($('m_break').value||0),allc=+($('m_allconn').value||0)>0?1:0;
-  const nameG=+($('m_name').value||0),virtue=+($('m_virtue').value||0);
+  // 手動(來自 ＋／− 與切換)
+  const circle=M.circle,semi=M.semi,brk=M.brk,allc=M.allconn?1:0,nameG=M.name,virtue=M.virtue;
   L.push({lbl:`4. 漩渦（圓 ${circle}×2 + 半圓 ${semi}×1）`,val:circle*2+semi});
   L.push({lbl:`5. 砂紋評估（${allc?'全連+7 ':''}不連 ${brk}×−2）`,val:(allc?7:0)-brk*2});
   L.push({lbl:'8. 名庭卡',val:nameG});
