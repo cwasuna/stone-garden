@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  枯山水 (Stone Garden) 拍照計分工具  -  純前端 / 無後端 / 無 AI / 可離線
+  ----------------------------------------------------------------------------
+  做法：手機拍／上傳庭園照片 → 拖四角對齊 3x5 棋盤 → 瀏覽器 canvas 影像分析
+        自動判斷每格(砂/苔/有無石頭/石頭大概大小) → 依規則精算分數。
+  CV 限制：漩渦、砂紋對齊、左右對稱、石頭精確種類無法可靠純前端辨識，
+           故偵測後可「點格修正」，並對看不到的項目(德點/名庭/漩渦/砂紋)提供手動欄位。
+  ----------------------------------------------------------------------------
+  產生者：Claude (Anthropic) Opus 4.8
+  最後修改日期：2026-06-30（加入 PWA：manifest / service worker / 主畫面圖示）
+  ============================================================================
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>枯山水 計分</title>
+<!-- PWA：可加到主畫面、全螢幕、離線；iOS / Android 皆適用 -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#14110e">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="枯山水計分">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root{
+    --bg:#14110e; --panel:#211c17; --panel2:#2c251d; --line:#3b3127;
+    --text:#e8e0d2; --muted:#a89c87; --accent:#b07d4f; --accent2:#7a9b6b;
+    --sand:#d8cfbd; --moss:#5f7d4a; --stone:#4a4a4a; --danger:#c2614f;
+    --gold:#d8b25e;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+    -webkit-text-size-adjust:100%;}
+  body{padding:12px 12px 60px;max-width:560px;margin:0 auto;}
+  h1{font-size:20px;margin:4px 0 2px;letter-spacing:2px;}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:12px;line-height:1.5;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:12px;margin-bottom:12px;}
+  .card h2{font-size:15px;margin:0 0 10px;color:var(--gold);letter-spacing:1px;
+    display:flex;align-items:center;gap:6px;}
+  .step{display:inline-block;background:var(--accent);color:#1a1410;border-radius:50%;
+    width:20px;height:20px;line-height:20px;text-align:center;font-size:12px;font-weight:700;}
+  button{font-family:inherit;font-size:14px;border:none;border-radius:10px;
+    padding:11px 14px;background:var(--accent);color:#1a1410;font-weight:700;
+    cursor:pointer;letter-spacing:1px;}
+  button.sec{background:var(--panel2);color:var(--text);border:1px solid var(--line);font-weight:500;}
+  button:active{transform:scale(.97);}
+  button:disabled{opacity:.4;}
+  .row{display:flex;gap:8px;flex-wrap:wrap;}
+  .row>*{flex:1;min-width:0;}
+  input[type=file]{display:none;}
+  label.btn{display:block;text-align:center;}
+  /* 影像區 */
+  .stage{position:relative;width:100%;background:#000;border-radius:10px;overflow:hidden;
+    touch-action:none;display:none;}
+  .stage canvas{display:block;width:100%;height:auto;}
+  #overlay{position:absolute;inset:0;width:100%;height:100%;}
+  video{width:100%;border-radius:10px;display:block;background:#000;}
+  .hint{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5;}
+  /* 棋盤格 */
+  .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:6px;}
+  .cell{aspect-ratio:1.35/1;border-radius:8px;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;font-size:11px;position:relative;
+    border:2px solid transparent;cursor:pointer;user-select:none;overflow:hidden;}
+  .cell.sand{background:var(--sand);color:#3a3225;}
+  .cell.moss{background:var(--moss);color:#eef3e6;}
+  .cell .stoneIco{font-size:20px;line-height:1;margin-top:2px;font-weight:700;}
+  .cell .pos{position:absolute;top:2px;left:4px;font-size:9px;opacity:.5;}
+  .cell.cc{border-color:var(--gold);}
+  .legend{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6;}
+  /* 分數 */
+  .score-line{display:flex;justify-content:space-between;align-items:center;
+    padding:7px 2px;border-bottom:1px dashed var(--line);font-size:13px;gap:8px;}
+  .score-line:last-child{border-bottom:none;}
+  .score-line .lbl{flex:1;}
+  .score-line .v{font-weight:700;min-width:40px;text-align:right;font-variant-numeric:tabular-nums;}
+  .score-line .v.neg{color:var(--danger);}
+  .score-line input{width:54px;background:var(--bg);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:5px;text-align:center;font-size:14px;font-family:inherit;}
+  .total{display:flex;justify-content:space-between;align-items:baseline;margin-top:10px;
+    padding-top:10px;border-top:2px solid var(--accent);}
+  .total .big{font-size:40px;font-weight:800;color:var(--gold);font-variant-numeric:tabular-nums;}
+  .tag{font-size:10px;color:var(--muted);}
+  .warn{font-size:11px;color:var(--accent2);}
+  details{margin-top:8px;}
+  summary{cursor:pointer;font-size:12px;color:var(--muted);}
+  .editbar{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted);}
+</style>
+</head>
+<body>
+
+<h1>枯山水 ・ 拍照計分</h1>
+<div class="sub">拍下你的庭園板 → 拖四角對齊 → 自動分析並算分。<br>
+※ 純前端離線運作。漩渦/砂紋對齊/對稱/石頭種類無法完全自動，偵測後可點格修正。</div>
+
+<!-- 1. 取得照片 -->
+<div class="card">
+  <h2><span class="step">1</span> 取得庭園照片</h2>
+  <div class="row">
+    <button id="btnCam" class="sec">開啟相機</button>
+    <label class="btn"><input type="file" id="file" accept="image/*" capture="environment">
+      <button class="sec" type="button" onclick="document.getElementById('file').click()">上傳/拍照</button>
+    </label>
+  </div>
+  <video id="video" playsinline style="display:none;margin-top:10px;"></video>
+  <button id="btnShot" style="display:none;margin-top:8px;width:100%;">📸 擷取畫面</button>
+  <div class="hint">建議：正上方俯拍、整片庭園入鏡、光線均勻不反光。</div>
+</div>
+
+<!-- 2. 對齊 + 分析 -->
+<div class="card" id="alignCard" style="display:none;">
+  <h2><span class="step">2</span> 拖四角對齊庭園範圍</h2>
+  <div class="stage" id="stage">
+    <canvas id="img"></canvas>
+    <svg id="overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+  </div>
+  <div class="hint">把四個圓點拖到庭園「3列×5行」格區的四個角。對齊後按下方分析。</div>
+  <button id="btnAnalyze" style="width:100%;margin-top:10px;">🔍 分析這張照片</button>
+</div>
+
+<!-- 3. 偵測結果(可修正) -->
+<div class="card" id="gridCard" style="display:none;">
+  <h2><span class="step">3</span> 偵測結果（點格可修正）</h2>
+  <div class="grid" id="grid"></div>
+  <div class="legend">
+    點一下格子循環切換：<b>砂 → 苔</b>；點石頭圖示循環：<br>
+    無 → □橫石 → △小立石 → ◇臥石 → ▲大立石 → 凵舟石。<br>
+    金框 = 中央直行。上排=最上列。
+  </div>
+  <div class="editbar">
+    <span>長按格子可單獨切換石頭。</span>
+  </div>
+</div>
+
+<!-- 4. 計分 -->
+<div class="card" id="scoreCard" style="display:none;">
+  <h2><span class="step">4</span> 計分結果</h2>
+  <div id="scoreList"></div>
+  <div class="total">
+    <span>總分</span><span class="big" id="totalScore">0</span>
+  </div>
+  <details>
+    <summary>無法從照片判讀的項目（請手動確認）</summary>
+    <div style="margin-top:8px;">
+      <div class="score-line"><span class="lbl">漩渦：完整圓「關聯磚數」(×2)</span>
+        <input type="number" id="m_circle" value="0" min="0"></div>
+      <div class="score-line"><span class="lbl">漩渦：半圓「關聯磚數」(×1)</span>
+        <input type="number" id="m_semi" value="0" min="0"></div>
+      <div class="score-line"><span class="lbl">砂紋不連接「處數」(每處 −2)</span>
+        <input type="number" id="m_break" value="0" min="0"></div>
+      <div class="score-line"><span class="lbl">全 15 格砂紋皆連接 (+7)</span>
+        <input type="number" id="m_allconn" value="0" min="0" max="1"></div>
+      <div class="score-line"><span class="lbl">名庭卡 加分</span>
+        <input type="number" id="m_name" value="0" min="0"></div>
+      <div class="score-line"><span class="lbl">剩餘德點 (每點 +1)</span>
+        <input type="number" id="m_virtue" value="0" min="0" max="6"></div>
+      <div class="hint">改完數字會即時更新總分。</div>
+    </div>
+  </details>
+</div>
+
+<script>
+"use strict";
+/* ===================== PWA 註冊 ===================== */
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+}
+/* ===================== 全域狀態 ===================== */
+const ROWS=3, COLS=5, CC=2;            // 3列 5行，中央直行=index2
+let imgEl=null;                        // 來源 Image
+let corners=null;                      // 四角(影像座標) [TL,TR,BR,BL]
+let cells=[];                          // cells[r][c] = {base:'sand'|'moss', stone:0..5}
+const STONE_ICONS=['', '□','△','◇','▲','凵'];   // 0無 1橫 2小立 3臥 4大立 5舟
+const STONE_NAME=['無','橫石','小立石','臥石','大立石','舟石'];
+const $=id=>document.getElementById(id);
+
+/* ===================== 取得照片 ===================== */
+let stream=null;
+$('btnCam').onclick=async()=>{
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    const v=$('video'); v.srcObject=stream; await v.play();
+    v.style.display='block'; $('btnShot').style.display='block';
+  }catch(e){ alert('無法開啟相機，改用「上傳/拍照」。\n'+e.message); }
+};
+$('btnShot').onclick=()=>{
+  const v=$('video');
+  const c=document.createElement('canvas');
+  c.width=v.videoWidth; c.height=v.videoHeight;
+  c.getContext('2d').drawImage(v,0,0);
+  loadImage(c.toDataURL('image/jpeg',0.9));
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); }
+  v.style.display='none'; $('btnShot').style.display='none';
+};
+$('file').onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>loadImage(r.result);
+  r.readAsDataURL(f);
+};
+
+function loadImage(src){
+  const im=new Image();
+  im.onload=()=>{ imgEl=im; setupStage(); };
+  im.src=src;
+}
+
+/* ===================== 影像 + 四角覆蓋 ===================== */
+let cw=0, ch=0;
+function setupStage(){
+  const cv=$('img'); const maxW=Math.min(520, document.body.clientWidth-26);
+  const scale=maxW/imgEl.width;
+  cw=Math.round(imgEl.width*scale); ch=Math.round(imgEl.height*scale);
+  cv.width=cw; cv.height=ch;
+  cv.getContext('2d').drawImage(imgEl,0,0,cw,ch);
+  // 預設四角(留邊),使用者再拖
+  corners=[ [cw*0.10,ch*0.18],[cw*0.90,ch*0.18],[cw*0.90,ch*0.82],[cw*0.10,ch*0.82] ];
+  $('alignCard').style.display='block';
+  $('stage').style.display='block';
+  drawOverlay();
+  $('alignCard').scrollIntoView({behavior:'smooth'});
+}
+
+function drawOverlay(){
+  const svg=$('overlay');
+  svg.setAttribute('viewBox',`0 0 ${cw} ${ch}`);
+  const [TL,TR,BR,BL]=corners;
+  // 內部 3x5 網格線(雙線性插值)
+  let lines='';
+  const P=(u,v)=>{
+    const top=[TL[0]+(TR[0]-TL[0])*u, TL[1]+(TR[1]-TL[1])*u];
+    const bot=[BL[0]+(BR[0]-BL[0])*u, BL[1]+(BR[1]-BL[1])*u];
+    return [top[0]+(bot[0]-top[0])*v, top[1]+(bot[1]-top[1])*v];
+  };
+  for(let c=0;c<=COLS;c++){const a=P(c/COLS,0),b=P(c/COLS,1);
+    lines+=`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}"/>`;}
+  for(let r=0;r<=ROWS;r++){const a=P(0,r/ROWS),b=P(1,r/ROWS);
+    lines+=`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}"/>`;}
+  const poly=corners.map(p=>p.join(',')).join(' ');
+  let dots='';
+  corners.forEach((p,i)=>dots+=`<circle cx="${p[0]}" cy="${p[1]}" r="${Math.max(cw,ch)*0.022}"
+    fill="#b07d4f" stroke="#fff" stroke-width="2" data-i="${i}"/>`);
+  svg.innerHTML=`<polygon points="${poly}" fill="rgba(176,125,79,.12)" stroke="#d8b25e" stroke-width="2"/>
+    <g stroke="#d8b25e" stroke-width="1" opacity=".7">${lines}</g>${dots}`;
+}
+
+/* 拖曳四角 */
+let drag=-1;
+function evtPt(e){
+  const svg=$('overlay'); const rect=svg.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  return [ (t.clientX-rect.left)/rect.width*cw, (t.clientY-rect.top)/rect.height*ch ];
+}
+function startDrag(e){
+  const p=evtPt(e); let best=-1,bd=1e9;
+  corners.forEach((c,i)=>{const d=Math.hypot(c[0]-p[0],c[1]-p[1]); if(d<bd){bd=d;best=i;}});
+  if(bd< Math.max(cw,ch)*0.10){ drag=best; e.preventDefault(); }
+}
+function moveDrag(e){
+  if(drag<0) return; e.preventDefault();
+  const p=evtPt(e);
+  corners[drag]=[Math.max(0,Math.min(cw,p[0])),Math.max(0,Math.min(ch,p[1]))];
+  drawOverlay();
+}
+function endDrag(){ drag=-1; }
+['mousedown','touchstart'].forEach(ev=>$('overlay').addEventListener(ev,startDrag,{passive:false}));
+['mousemove','touchmove'].forEach(ev=>window.addEventListener(ev,moveDrag,{passive:false}));
+['mouseup','touchend'].forEach(ev=>window.addEventListener(ev,endDrag));
+
+/* ===================== 影像分析 ===================== */
+$('btnAnalyze').onclick=analyze;
+function analyze(){
+  // 在離屏 canvas 取原圖像素
+  const oc=document.createElement('canvas');
+  oc.width=cw; oc.height=ch;
+  const octx=oc.getContext('2d');
+  octx.drawImage(imgEl,0,0,cw,ch);
+  const data=octx.getImageData(0,0,cw,ch).data;
+  const [TL,TR,BR,BL]=corners;
+  const P=(u,v)=>{
+    const top=[TL[0]+(TR[0]-TL[0])*u, TL[1]+(TR[1]-TL[1])*u];
+    const bot=[BL[0]+(BR[0]-BL[0])*u, BL[1]+(BR[1]-BL[1])*u];
+    return [top[0]+(bot[0]-top[0])*v, top[1]+(bot[1]-top[1])*v];
+  };
+  cells=[];
+  for(let r=0;r<ROWS;r++){
+    const rowArr=[];
+    for(let c=0;c<COLS;c++){
+      // 取格內 30%~70% 區域取樣
+      let n=0, sumR=0,sumG=0,sumB=0, greenN=0, darkN=0, total=0;
+      for(let su=0.28;su<=0.72;su+=0.06){
+        for(let sv=0.28;sv<=0.72;sv+=0.06){
+          const pt=P((c+su)/COLS,(r+sv)/ROWS);
+          const x=Math.round(pt[0]), y=Math.round(pt[1]);
+          if(x<0||y<0||x>=cw||y>=ch) continue;
+          const idx=(y*cw+x)*4;
+          const R=data[idx],G=data[idx+1],B=data[idx+2];
+          sumR+=R;sumG+=G;sumB+=B;n++; total++;
+          const bright=(R+G+B)/3;
+          if(bright<70) darkN++;                                  // 暗 → 石頭候選
+          if(G>R*1.08 && G>B*1.05 && bright>45 && bright<200) greenN++; // 綠 → 苔
+        }
+      }
+      if(n===0){rowArr.push({base:'sand',stone:0});continue;}
+      const darkFrac=darkN/total, greenFrac=greenN/total;
+      // 基底：綠多→苔；否則砂(石頭壓在磚上,以非暗區綠比例判斷)
+      const base = greenFrac>0.22 ? 'moss' : 'sand';
+      // 石頭：暗區比例高
+      let stone=0;
+      if(darkFrac>0.12){
+        // 依暗區大小粗估：小→小立/橫，大→大立/舟
+        stone = darkFrac>0.42 ? 4 : (darkFrac>0.25 ? 3 : 1);
+      }
+      rowArr.push({base, stone});
+    }
+    cells.push(rowArr);
+  }
+  renderGrid();
+  score();
+  $('gridCard').style.display='block';
+  $('scoreCard').style.display='block';
+  $('gridCard').scrollIntoView({behavior:'smooth'});
+}
+
+/* ===================== 棋盤渲染 + 編輯 ===================== */
+function renderGrid(){
+  const g=$('grid'); g.innerHTML='';
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    const cell=cells[r][c];
+    const d=document.createElement('div');
+    d.className='cell '+cell.base+(c===CC?' cc':'');
+    d.innerHTML=`<span class="pos">${['上','中','下'][r]}${c+1}</span>
+      <span>${cell.base==='moss'?'苔':'砂'}</span>
+      <span class="stoneIco">${STONE_ICONS[cell.stone]||'·'}</span>`;
+    let lp=null;
+    const cycleStone=()=>{cell.stone=(cell.stone+1)%6; renderGrid(); score();};
+    const cycleBase=()=>{cell.base=cell.base==='sand'?'moss':'sand'; renderGrid(); score();};
+    d.onclick=()=>{ if(lp){clearTimeout(lp);lp=null;} cycleBase(); };
+    // 點石頭圖示 → 切石頭(阻止冒泡到 base)
+    d.querySelector('.stoneIco').onclick=(e)=>{e.stopPropagation(); cycleStone();};
+    // 長按 → 切石頭
+    d.addEventListener('touchstart',()=>{lp=setTimeout(()=>{cycleStone();lp=null;},500);},{passive:true});
+    d.addEventListener('touchend',()=>{if(lp){clearTimeout(lp);lp=null;}});
+    g.appendChild(d);
+  }
+}
+
+/* ===================== 計分(規則精算) ===================== */
+['m_circle','m_semi','m_break','m_allconn','m_name','m_virtue']
+  .forEach(id=>{const el=$(id); if(el) el.addEventListener('input',score);});
+
+function score(){
+  const L=[]; // {lbl, val, tag}
+  // 取整數工具
+  const isSand=(r,c)=>cells[r][c].base==='sand';
+  const isMoss=(r,c)=>cells[r][c].base==='moss';
+  const stoneAt=(r,c)=>cells[r][c].stone;
+  const stones=[]; // {r,c,type}
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++)
+    if(stoneAt(r,c)>0) stones.push({r,c,type:stoneAt(r,c)});
+
+  // 1 基礎砂點：最大「全砂」矩形面積 ×1
+  let maxSand=0;
+  for(let r1=0;r1<ROWS;r1++)for(let r2=r1;r2<ROWS;r2++)
+    for(let c1=0;c1<COLS;c1++)for(let c2=c1;c2<COLS;c2++){
+      let ok=true;
+      for(let r=r1;r<=r2&&ok;r++)for(let c=c1;c<=c2;c++) if(!isSand(r,c)){ok=false;break;}
+      if(ok) maxSand=Math.max(maxSand,(r2-r1+1)*(c2-c1+1));
+    }
+  L.push({lbl:'1. 基礎砂點（最大全砂矩形）',val:maxSand});
+
+  // 2 基礎苔點：苔格 ×2
+  let mossN=0; for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++) if(isMoss(r,c)) mossN++;
+  L.push({lbl:`2. 基礎苔點（${mossN} 格 ×2）`,val:mossN*2});
+
+  // 3 對稱獎勵：每對稱列 +5（CV 以同列鏡像格基底是否一致粗判，可手動於格面修正）
+  let symRows=0;
+  for(let r=0;r<ROWS;r++){
+    if(cells[r][0].base===cells[r][4].base && cells[r][1].base===cells[r][3].base) symRows++;
+  }
+  L.push({lbl:`3. 對稱獎勵（${symRows} 列 ×5）`,val:symRows*5,
+    tag:'※僅以砂/苔鏡像粗判，砂紋方向請自行確認'});
+
+  // 6 基礎石點：不同石種數 ×2
+  const types=new Set(stones.map(s=>s.type));
+  L.push({lbl:`6. 基礎石點（${types.size} 種 ×2）`,val:types.size*2});
+
+  // 7 石組布局 A~F
+  let layout=0; const lz=[];
+  // A 騎士:2x3 區塊內恰兩石且呈馬步(差(±1,±2)或(±2,±1))；B 對角:3x3 內恰三石對角
+  // 以「未被 A/B 佔用」標記避免重複
+  const usedAB=new Set(); const key=s=>s.r+','+s.c;
+  // B 先（分高）：3x3 視窗中恰好三顆且在同一對角線
+  for(let r=0;r<=ROWS-3;r++)for(let c=0;c<=COLS-3;c++){
+    const inn=stones.filter(s=>s.r>=r&&s.r<r+3&&s.c>=c&&s.c<c+3);
+    if(inn.length===3){
+      const diag1=inn.every(s=>(s.r-r)===(s.c-c));
+      const diag2=inn.every(s=>(s.r-r)===(2-(s.c-c)));
+      if((diag1||diag2) && inn.every(s=>!usedAB.has(key(s)))){
+        layout+=7; lz.push('B對角+7'); inn.forEach(s=>usedAB.add(key(s)));
+      }
+    }
+  }
+  // A 騎士：2x3 或 3x2 視窗中恰兩石且為馬步關係
+  const windows=[];
+  for(let r=0;r<=ROWS-2;r++)for(let c=0;c<=COLS-3;c++)windows.push([r,c,2,3]);
+  for(let r=0;r<=ROWS-3;r++)for(let c=0;c<=COLS-2;c++)windows.push([r,c,3,2]);
+  for(const [r,c,h,w] of windows){
+    const inn=stones.filter(s=>s.r>=r&&s.r<r+h&&s.c>=c&&s.c<c+w);
+    if(inn.length===2 && inn.every(s=>!usedAB.has(key(s)))){
+      const dr=Math.abs(inn[0].r-inn[1].r), dc=Math.abs(inn[0].c-inn[1].c);
+      if((dr===1&&dc===2)||(dr===2&&dc===1)){
+        layout+=5; lz.push('A騎士+5'); inn.forEach(s=>usedAB.add(key(s)));
+      }
+    }
+  }
+  // C 蓬萊山：上排相鄰兩大立石(type4)且皆在苔上，限一次 +10
+  for(let c=0;c<COLS-1;c++){
+    if(stoneAt(0,c)===4&&stoneAt(0,c+1)===4&&isMoss(0,c)&&isMoss(0,c+1)){ layout+=10; lz.push('C蓬萊山+10'); break; }
+  }
+  // D 三尊石：上排 苔上 小(2)-大(4)-小(2) 連續，限一次 +15
+  for(let c=0;c<COLS-2;c++){
+    if(stoneAt(0,c)===2&&stoneAt(0,c+1)===4&&stoneAt(0,c+2)===2&&
+       isMoss(0,c)&&isMoss(0,c+1)&&isMoss(0,c+2)){ layout+=15; lz.push('D三尊石+15'); break; }
+  }
+  // E 中央直行臥石(type3) 每顆 +3
+  let recl=0; for(let r=0;r<ROWS;r++) if(stoneAt(r,CC)===3) recl++;
+  if(recl) { layout+=recl*3; lz.push('E臥石'+recl+'×3'); }
+  // F 舟石(type5)在底列 限一次 +3
+  for(let c=0;c<COLS;c++){ if(stoneAt(ROWS-1,c)===5){ layout+=3; lz.push('F舟石+3'); break; } }
+  L.push({lbl:'7. 石組布局 '+(lz.length?'('+lz.join(' / ')+')':'(無)'),val:layout});
+
+  // 手動項目
+  const circle=+($('m_circle').value||0), semi=+($('m_semi').value||0);
+  const brk=+($('m_break').value||0), allc=+($('m_allconn').value||0)>0?1:0;
+  const nameG=+($('m_name').value||0), virtue=+($('m_virtue').value||0);
+  L.push({lbl:`4. 漩渦（圓 ${circle}×2 + 半圓 ${semi}×1）`,val:circle*2+semi});
+  const sandEval=(allc?7:0) - brk*2;
+  L.push({lbl:`5. 砂紋評估（${allc?'全連+7 ':''}不連 ${brk}×−2）`,val:sandEval});
+  L.push({lbl:'8. 名庭卡',val:nameG});
+  L.push({lbl:`9. 剩餘德點（${virtue}×1）`,val:virtue});
+
+  // 渲染
+  const box=$('scoreList'); box.innerHTML='';
+  let total=0;
+  L.forEach(it=>{
+    total+=it.val;
+    const d=document.createElement('div'); d.className='score-line';
+    d.innerHTML=`<span class="lbl">${it.lbl}${it.tag?`<br><span class="warn">${it.tag}</span>`:''}</span>
+      <span class="v ${it.val<0?'neg':''}">${it.val>=0?'+':''}${it.val}</span>`;
+    box.appendChild(d);
+  });
+  $('totalScore').textContent=total;
+}
+</script>
+</body>
+</html>
